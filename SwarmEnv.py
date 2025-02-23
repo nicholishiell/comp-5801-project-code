@@ -36,7 +36,7 @@ class SwarmEnv(gym.Env):
         self.field_size = field_size
         
         # Initialize the agent locations        
-        self.swarm_xy = np.zeros((n_agents, 2), dtype=float)
+        self.swarm_xyw = np.zeros((n_agents, 3), dtype=float)
        
         # The size of the PyGame window
         self.window_size = screen_size 
@@ -56,7 +56,7 @@ class SwarmEnv(gym.Env):
         
         self.action_space = spaces.Box(low=-1.0,
                                        high=1.0,
-                                       shape=(self.n_agents,2),
+                                       shape=(self.n_agents,3),
                                        dtype=np.float32)
         
         self.reset()
@@ -64,8 +64,9 @@ class SwarmEnv(gym.Env):
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
     def _randomize_agent_locations(self):
-        half_width = self.field_size / 2
-        self.swarm_xy = np.random.uniform(-half_width, half_width, ( self.n_agents, 2))
+        half_width = self.field_size / 3
+        self.swarm_xyw[:, :2] = np.random.uniform(-half_width, half_width, (self.n_agents, 2))
+        self.swarm_xyw[:, 2] = 1.0
       
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # This function calculates the temperature field including all sources
@@ -75,13 +76,13 @@ class SwarmEnv(gym.Env):
                          
         # Compute temperature field
         temp_map = np.zeros_like(self.X)
-        for source in self.swarm_xy:
+        for source in self.swarm_xyw:
             xs = source[0]
             ys = source[1]
-            intensity = INTENSITY
-            distance = ((self.X - xs)**2 + (self.Y - ys)**2)
             
-            temp_map += intensity / (distance+0.1)  # Avoid division by zero
+            intensity = source[2]
+            distance = ((self.X - xs)**2 + (self.Y - ys)**2)
+            temp_map += intensity / (distance + 1e-6)  # Avoid division by zero
                         
         return temp_map
     
@@ -103,19 +104,19 @@ class SwarmEnv(gym.Env):
     # target source
     def _get_obs_per_pos(   self,
                             temp_map, 
-                            pos):
+                            source):
         
-        distance = ((self.X - pos[0])**2 + (self.Y - pos[1])**2)
-        intensity = INTENSITY
-        temp_map -= intensity / (distance+0.1)
+        intensity = source[2]
+        distance = ((self.X - source[0])**2 + (self.Y - source[1])**2)
+        temp_map -= intensity / (distance + 1e-6)  # Avoid division by zero
         
         # Compute gradient
         gx, gy = np.gradient(temp_map)
               
         # Interpolate temperature map at position pos
-        temp_at_pos = self._interpolate(pos[0], pos[1], temp_map)
-        gx_at_pos = self._interpolate(pos[0], pos[1], gx)
-        gy_at_pos = self._interpolate(pos[0], pos[1], gy)
+        temp_at_pos = self._interpolate(source[0], source[1], temp_map)
+        gx_at_pos = self._interpolate(source[0], source[1], gx)
+        gy_at_pos = self._interpolate(source[0], source[1], gy)
        
         return temp_at_pos, gx_at_pos, gy_at_pos       
        
@@ -127,7 +128,7 @@ class SwarmEnv(gym.Env):
         
         observation = np.zeros(self.observation_space.shape, dtype=float)
                
-        for i,pos in enumerate(self.swarm_xy):
+        for i,pos in enumerate(self.swarm_xyw):
             c,gx,gy = self._get_obs_per_pos(temp_map.copy(),
                                             pos)  
         
@@ -158,6 +159,8 @@ class SwarmEnv(gym.Env):
         self.is_temp_map_up_to_date = False
         self.step_counter = 0
     
+        self.action = np.zeros(self.action_space.shape, dtype=float)
+        
         self.action = None
         observation = self._get_obs()
         info = {}
@@ -223,13 +226,17 @@ class SwarmEnv(gym.Env):
 
     def step(self, action):
         
-        self.action = action
-        
+        intensity = action[:, 2]           
+        velocity = action[:, :2]
+            
         # Clip the action values to the range [-1, 1]
-        action = np.clip(action, -1., 1.)
+        velocity = np.clip(velocity, -1., 1.)
         
         # Update the agent locations
-        self.swarm_xy += 0.05*action
+        self.swarm_xyw[:, :2] += 0.05*velocity        
+        
+        # update the agents intensity
+        self.swarm_xyw[:, 2] = np.clip(intensity,1.,10.)
         
         # Clip the agent locations to the field boundaries
         # half_width = self.field_size / 2
@@ -246,6 +253,8 @@ class SwarmEnv(gym.Env):
         done = self._check_done()
         info = {}
         
+        self.action = action
+        
         return observation, reward, done, info
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -258,7 +267,7 @@ class SwarmEnv(gym.Env):
         # Scale factor to convert field coordinates to image coordinates
         scale = self.window_size / self.field_size
         
-        for agent in self.swarm_xy:
+        for agent in self.swarm_xyw:
             # Convert agent position to image coordinates
             center = (int((agent[0] + self.field_size / 2) * scale), 
                         int((agent[1] + self.field_size / 2) * scale))
@@ -270,20 +279,20 @@ class SwarmEnv(gym.Env):
         # draw a 
         obs = self._get_obs()
         for i, row in enumerate(obs):
-            x = int((self.swarm_xy[i][0] + self.field_size / 2) * scale)
+            x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
             dy = int(row[0] * 10)
             
-            y = int((self.swarm_xy[i][1] + self.field_size / 2) * scale)
+            y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
             dx = int(row[1] * 10)
                        
             cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 255, 0), 1)
             
         action = self.action
         for i, row in enumerate(action):
-            x = int((self.swarm_xy[i][0] + self.field_size / 2) * scale)
+            x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
             dx = int(row[0] * 10)
             
-            y = int((self.swarm_xy[i][1] + self.field_size / 2) * scale)
+            y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
             dy = int(row[1] * 10)
             
             cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 0, 255), 1)

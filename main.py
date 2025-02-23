@@ -44,23 +44,39 @@ def policy(state : np.ndarray,
            action_space )->np.ndarray:
 
     action = np.zeros(action_space.shape, dtype=float)
-
+    
+    angle = np.deg2rad(5.)
+    rotation_matrix_1 = np.array([[np.cos(angle), -np.sin(angle)], 
+                                [np.sin(angle), np.cos(angle)]])
+    
+    
+    angle = np.deg2rad(95.)
+    rotation_matrix_2 = np.array([[np.cos(angle), -np.sin(angle)], 
+                                [np.sin(angle), np.cos(angle)]])
+    
+    
     for i, row in enumerate(state):
         
         concentration = row[2]
-
         gradient = row[:2] 
         gradient = gradient[::-1]
 
         # if values is less than one travel a long the gradient
         if concentration < 2.:
-            action[i] = gradient       
+            action[i,:2] =  rotation_matrix_1 @ gradient       
         # if the value is greater than than 2 travel perpendicular to the gradient
-        elif concentration < 3.:
-            action[i] = np.array([gradient[1], -gradient[0]])            
+        elif concentration < 9.:
+            action[i,:2] = rotation_matrix_2 @ gradient
+            # action[i,:2] = np.array([gradient[1], -gradient[0]])
+            
         # if the value is greater than 2 travel away from the gradient
         else:
-            action[i] = -gradient[:2]
+            action[i,:2] = -gradient[:2]
+        
+        if concentration < 2.:
+            action[i,2] += 0.1*concentration
+        else:
+            action[i,2] -= 0.1*concentration
     
     return action
 
@@ -71,10 +87,8 @@ def main():
     
     env = SwarmEnv( n_agents=5,
                     agent_radius=0.4,
-                    max_steps=100)
-    
-    print(f'Observation space: {env.observation_space.shape}')
-    print(f'Action space: {env.action_space.shape}')
+                    max_steps=100,
+                    field_size = 15.)
     
     done = False
     state, _ = env.reset()
@@ -90,6 +104,7 @@ def main():
         print(f"Reward: {reward}")
         print(f"Done: {done}")
         print(f"Info: {info}")
+        print(f'Step: {env.step_counter} / {env.max_steps}')
         
         # Plot the temperature field and gradient vectors
         # plot_temp_field(env)
