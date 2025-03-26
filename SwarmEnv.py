@@ -6,7 +6,15 @@ import gymnasium as gym
 from gymnasium import spaces
 import cv2
 
-INTENSITY = 1.
+from Agent import Agent
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+MAX_TURN_RATE = 0.1 # Maximum turn rate in radians per time step
+TIME_STEP = 0.1 # Time step in seconds
+MAX_INTENSITY = 10.0 # Maximum intensity of the signal emitted by an agent
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 class SwarmEnv(gym.Env):
     
@@ -24,49 +32,64 @@ class SwarmEnv(gym.Env):
                  screen_size = 512):
         
         # number of agents
-        self.n_agents = n_agents
-        
-        # radius of the agents
-        self.agent_radius = agent_radius
+        self.agent_list = [Agent(0., 0., 0., 0.) for _ in range(n_agents)]     
+                
+
         
         # maximum number of steps
         self.max_steps = max_steps
         
         # store the dimensions of the field
-        self.field_size = field_size
+        half_width = 0.5*field_size
         
-        # Initialize the agent locations        
-        self.swarm_xyw = np.zeros((n_agents, 3), dtype=float)
-       
-        # The size of the PyGame window
-        self.window_size = screen_size 
-
+        self.x_max =  half_width
+        self.y_max =  half_width
+        self.x_min = -half_width
+        self.y_min = -half_width
+               
         # Define grid
-        half_width = field_size / 2.
+        # np.linespace(min_range, max_range, number_of_points)
         x = np.linspace(-int(half_width), int(half_width), int(half_width*10))
         y = np.linspace(-int(half_width), int(half_width), int(half_width*10))
         self.X, self.Y = np.meshgrid(x, y)
 
+        # The size of the PyGame window (display purposes)
+        self.window_size = screen_size 
+        # radius of the agents (display purposes)
+        self.agent_radius = agent_radius
+        # remember the field size so we can translate between field and image coordinates
+        self.field_size = field_size
+        
+
         #  Box -    Supports continuous (and discrete) vectors or matrices, 
         #           used for vector observations, images, etc
-        self.observation_space = spaces.Box(low=-1.*n_agents,
-                                            high=1.*n_agents, 
-                                            shape=(self.n_agents,3), 
+        # the observation space is a 3D vector for each agent
+        # the first two values are the gradient of the temperature field
+        # the third value is the temperature at the agent's location
+        self.observation_space = spaces.Box(low=np.tile([-1.,-1.,0.], (n_agents, 1)),
+                                            high=np.tile([-1.,-1.,float(n_agents)], (n_agents, 1)), 
+                                            shape=(n_agents,3), 
                                             dtype=np.float32)
         
-        self.action_space = spaces.Box(low=-1.0,
-                                       high=1.0,
-                                       shape=(self.n_agents,3),
+        # the action space is a 2D vector for each agent
+        # the first value is the turning rate
+        # the second value is the intensity of the signal emitted by the agent
+        self.action_space = spaces.Box(low=np.tile([-MAX_TURN_RATE, .0], (n_agents, 1)),
+                                       high=np.tile([MAX_TURN_RATE,1.0], (n_agents, 1)),
+                                       shape=(n_agents,2),
                                        dtype=np.float32)
         
         self.reset()
     
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
-    def _randomize_agent_locations(self):
-        half_width = self.field_size / 3
-        self.swarm_xyw[:, :2] = np.random.uniform(-half_width, half_width, (self.n_agents, 2))
-        self.swarm_xyw[:, 2] = 1.0
+    def _randomize_agents(self,
+                          buffer=0.5):
+        for agent in self.agent_list:
+            agent.randomize_state((buffer*self.x_min, buffer*self.x_max),
+                                  (buffer*self.y_min, buffer*self.y_max),
+                                  (-np.pi, np.pi),
+                                  (0., 1))
       
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # This function calculates the temperature field including all sources
@@ -76,13 +99,15 @@ class SwarmEnv(gym.Env):
                          
         # Compute temperature field
         temp_map = np.zeros_like(self.X)
-        for source in self.swarm_xyw:
-            xs = source[0]
-            ys = source[1]
+        for agent in self.agent_list:
+            xs = agent.x
+            ys = agent.y
             
-            intensity = source[2]
-            distance = ((self.X - xs)**2 + (self.Y - ys)**2)
-            temp_map += intensity / (distance + 1e-6)  # Avoid division by zero
+            intensity = agent.get_intensity()
+            
+            distance_squared = ((self.X - xs)**2 + (self.Y - ys)**2)
+            
+            temp_map += intensity / (distance_squared + 1)  # Avoid division by zero
                         
         return temp_map
     
@@ -124,22 +149,31 @@ class SwarmEnv(gym.Env):
     
     def _get_obs(self):
         
+        # get the temperature map including all agents
         temp_map = self.get_temp_map()
         
+        # create an empty observation array
         observation = np.zeros(self.observation_space.shape, dtype=float)
-               
-        for i,pos in enumerate(self.swarm_xyw):
-            c,gx,gy = self._get_obs_per_pos(temp_map.copy(),
-                                            pos)  
         
-            norm = np.sqrt(gx**2 + gy**2)
+        # loop over all agents to get their individual observations
+        for i, agent in enumerate(self.agent_list):
+            # c,gx,gy = self._get_obs_per_pos(temp_map.copy(),
+            #                                 (agent.x, agent.y, agent.intensity))  
+            
+            gx, gy = np.gradient(temp_map)
+            c = self._interpolate(agent.x, agent.y, temp_map)
+            gx_at_pos = self._interpolate(agent.x, agent.y, gx)
+            gy_at_pos = self._interpolate(agent.x, agent.y, gy)
+
+        
+            norm = np.sqrt(gx_at_pos**2 + gy_at_pos**2)
             if norm != 0:
                 gx /= norm
                 gy /= norm
                
-            observation[i, 0] = gx
-            observation[i, 1] = gy
-            observation[i, 2] = c
+            observation[i, 0] = gx_at_pos
+            observation[i, 1] = gy_at_pos
+            observation[i, 2] = c - MAX_INTENSITY
                 
         return observation
 
@@ -153,7 +187,7 @@ class SwarmEnv(gym.Env):
         super().reset(seed=seed)      
         
         # randomly position agents
-        self._randomize_agent_locations()
+        self._randomize_agents()
         
         # reset other simulation variables
         self.is_temp_map_up_to_date = False
@@ -185,8 +219,7 @@ class SwarmEnv(gym.Env):
             
         #     # Draw the circle
         #     cv2.circle(img, center, int(self.agent_radius * scale), (255, 0, 0), -1)
-                
-        
+                        
         # # Save the image to a PNG file with a filename related to the current step
         # frame_id = f"{self.step_counter:03d}"
         # cv2.imwrite(f"output/{frame_id}.png")
@@ -204,9 +237,7 @@ class SwarmEnv(gym.Env):
         # largest_contour = max(contours, key=cv2.contourArea)
         
         # # Calculate the area of the largest contour
-        # largest_blob_size = cv2.contourArea(largest_contour)
-        
-       
+        # largest_blob_size = cv2.contourArea(largest_contour)     
         
         # Display the image
         # cv2.imshow('Swarm Environment', img)
@@ -223,26 +254,27 @@ class SwarmEnv(gym.Env):
         return self.step_counter >= self.max_steps
     
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
+    # This function is called at each time step
+    # the action is a 2D vector for each agent so the shape is (n_agents, 2)
+    # first value is the turning rate
+    # second value is the intensity of the signal emitted by the agent
     def step(self, action):
         
-        intensity = action[:, 2]           
-        velocity = action[:, :2]
-            
-        # Clip the action values to the range [-1, 1]
-        velocity = np.clip(velocity, -1., 1.)
+        turning_rate = action[:, 0]
+        intensity = action[:, 1]           
+                    
+        for i, agent in enumerate(self.agent_list):
+            # apply action to agent
+            agent.update_heading(turning_rate[i])
+            agent.set_intensity(intensity[i])
         
-        # Update the agent locations
-        self.swarm_xyw[:, :2] += 0.05*velocity        
-        
-        # update the agents intensity
-        self.swarm_xyw[:, 2] = np.clip(intensity,1.,10.)
-        
-        # Clip the agent locations to the field boundaries
-        # half_width = self.field_size / 2
-        # self.swarm_xy = np.clip(self.swarm_xy, -half_width, half_width)
-        
+            # update the position of the agent
+            agent.update_position(TIME_STEP)
+                
+        # the temperature map is no longer up to date
         self.is_temp_map_up_to_date = False
+        
+        # increment the step counter
         self.step_counter += 1
         
         # Get the observations
@@ -259,6 +291,12 @@ class SwarmEnv(gym.Env):
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
+    def _agent_visible(self, agent) -> bool:
+        
+        return self.x_min <= agent.x <= self.x_max and self.y_min <= agent.y <= self.y_max
+    
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    
     def render(self):
         # Create a blank image
         img = np.zeros((self.window_size, 
@@ -267,35 +305,50 @@ class SwarmEnv(gym.Env):
         # Scale factor to convert field coordinates to image coordinates
         scale = self.window_size / self.field_size
         
-        for agent in self.swarm_xyw:
+        for i, agent in enumerate(self.agent_list):
+            
+            # skip agents that are not visible
+            if not self._agent_visible(agent):
+                continue
+            
+            # get the position of the agent
+            pos = agent.get_position()            
+            
             # Convert agent position to image coordinates
-            center = (int((agent[0] + self.field_size / 2) * scale), 
-                        int((agent[1] + self.field_size / 2) * scale))
-            
-            # Draw the circle
-            cv2.circle(img, center, int(self.agent_radius * scale), (255, 0, 0), -1)
-                
+            center = (int((pos[0] + self.field_size / 2) * scale), 
+                        int((pos[1] + self.field_size / 2) * scale))
         
-        # draw a 
-        obs = self._get_obs()
-        for i, row in enumerate(obs):
-            x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
-            dy = int(row[0] * 10)
+            # draw the circle
+            cv2.circle(img, center, int(self.agent_radius * scale), (255, 0, 0), -1)
             
-            y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
-            dx = int(row[1] * 10)
+            # Draw the number 3 inside the circle
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            font_thickness = 1
+            text_size = cv2.getTextSize('3', font, font_scale, font_thickness)[0]
+            text_x = center[0] - text_size[0] // 2
+            text_y = center[1] + text_size[1] // 2
+            cv2.putText(img, str(i), (text_x, text_y), font, font_scale, (255, 255, 255), font_thickness)
+                
+        # obs = self._get_obs()
+        # for i, row in enumerate(obs):
+        #     x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
+        #     dy = int(row[0] * 10)
+            
+        #     y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
+        #     dx = int(row[1] * 10)
                        
-            cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 255, 0), 1)
+        #     cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 255, 0), 1)
             
-        action = self.action
-        for i, row in enumerate(action):
-            x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
-            dx = int(row[0] * 10)
+        # action = self.action
+        # for i, row in enumerate(action):
+        #     x = int((self.swarm_xyw[i][0] + self.field_size / 2) * scale)
+        #     dx = int(row[0] * 10)
             
-            y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
-            dy = int(row[1] * 10)
+        #     y = int((self.swarm_xyw[i][1] + self.field_size / 2) * scale)
+        #     dy = int(row[1] * 10)
             
-            cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 0, 255), 1)
+        #     cv2.arrowedLine(img, (x, y), (x + dx, y + dy), (0, 0, 255), 1)
         
         
         # Save the image to a PNG file with a filename related to the current step
