@@ -14,49 +14,52 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 MAX_TURN_RATE = 0.1 # Maximum turn rate in radians per time step
 TIME_STEP = 0.1 # Time step in seconds
-MAX_INTENSITY = 10.0 # Maximum intensity of the signal emitted by an agent
+MAX_INTENSITY = 100.0 # Maximum intensity of the signal emitted by an agent
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # this function interpolates the temperature field at a given position
-def _interpolate(x,
+def _interpolate(   x,
                     y,
                     map,
                     x_grid,
                     y_grid):
 
-    return interpolate.griddata((x_grid, y_grid),
-                                map.flatten(),
-                                (x, y),
-                                method='cubic')
+    interpolator = interpolate.RegularGridInterpolator((x_grid, y_grid),
+                                                       map,
+                                                       method='cubic',
+                                                       bounds_error=False,
+                                                       fill_value=None)
+    return interpolator((x,y))
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Calculates the observation for each agent
 # loop over all agents to get their individual observations
 def process_agent(  i,
-                    pos, 
+                    pos,
                     heading,
                     temp_map,
                     x_grid,
                     y_grid):
-    
+
     # calculate the gradient of the temperature map
     gx, gy = np.gradient(temp_map)
 
-    c = _interpolate(pos[0],pos[1], temp_map, x_grid, y_grid)
-    gx_at_pos = _interpolate(pos[0],pos[1], gx, x_grid, y_grid)
-    gy_at_pos = _interpolate(pos[0],pos[1], gy, x_grid, y_grid)
+    # calculate the temperature at the agent's position
+    c = _interpolate(pos[1],pos[0], temp_map, x_grid, y_grid)
+    gx_at_pos = _interpolate(pos[1],pos[0], gx, x_grid, y_grid)
+    gy_at_pos = _interpolate(pos[1],pos[0], gy, x_grid, y_grid)
 
     # calculate the angle of the gradient
     angle_global = np.arctan2(gx_at_pos, gy_at_pos)
-    # calculate the angle between the agent's heading and the gradient
-    angle_rel = angle_global - heading
-    # normalize the angle difference to be between -pi and pi
-    angle_rel = (angle_rel + np.pi) % (2 * np.pi) - np.pi
 
-    # calculate intensity
-    intensity = c - MAX_INTENSITY  # subtract the intensity produced by the agent
-    
-    return i, angle_rel, min(intensity, MAX_INTENSITY)
+    # calculate the angle of the gradient relative to the agent's heading
+    angle_relative = angle_global - heading
+    # normalize the angle to be between -pi and pi
+    angle_relative = (angle_relative + np.pi) % (2 * np.pi) - np.pi
+
+    # print(f"Agent {i} = intensity: {c} gradient: {gx_at_pos, gy_at_pos} theta: {angle_global*180./np.pi} ")
+
+    return i, angle_relative, min(c, MAX_INTENSITY)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -96,9 +99,9 @@ class SwarmEnv(gym.Env):
 
         # Define grid
         # np.linespace(min_range, max_range, number_of_points)
-        x = np.linspace(-int(half_width), int(half_width), int(half_width*10))
-        y = np.linspace(-int(half_width), int(half_width), int(half_width*10))
-        self.X, self.Y = np.meshgrid(x, y)
+        x = np.linspace(-int(half_width), int(half_width), int(field_size*10))
+        y = np.linspace(-int(half_width), int(half_width), int(field_size*10))
+        self.X, self.Y = np.meshgrid(x, y, indexing='xy')
 
         # The size of the PyGame window (display purposes)
         self.window_size = screen_size
@@ -109,13 +112,9 @@ class SwarmEnv(gym.Env):
 
         #  Box -    Supports continuous (and discrete) vectors or matrices,
         #           used for vector observations, images, etc
-        # the observation space is a 3D vector for each agent
-        # the first two values are the gradient of the temperature field
-        # the third value is the temperature at the agent's location
-        # self.observation_space = spaces.Box(low=np.tile([-1.,-1.,0.], (n_agents, 1)),
-        #                                     high=np.tile([1.,1.,float(n_agents)], (n_agents, 1)),
-        #                                     shape=(n_agents,3),
-        #                                     dtype=np.float32)
+        # the observation space is a 2D vector for each agent
+        # the first value is angle relative to the agents heading of the gradient
+        # the second value is the temperature at the agent's location
         self.observation_space = spaces.Box(low=np.tile([-np.pi,0.], (n_agents, 1)),
                                             high=np.tile([np.pi,float(MAX_INTENSITY)], (n_agents, 1)),
                                             shape=(n_agents,2),
@@ -133,10 +132,36 @@ class SwarmEnv(gym.Env):
         self.scale = self.window_size / self.field_size
 
         # The minimum size of the smallest blob
-        # self.min_blob_size = 8028
-        self.min_blob_size = 4406
+        self.min_blob_size = self._calculate_min_blob_size()
 
         self.reset()
+
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # this function calculates the minimum size of the smallest blob
+    def _calculate_min_blob_size(self):
+        # Create a blank image
+        img = np.zeros((self.window_size,
+                        self.window_size, 3), dtype=np.uint8)
+
+        agent = self.agent_list[0]
+
+        # Draw a circle representing the agents field of view
+        radius = int(agent.vision_range * self.scale)
+        center = (int((self.x_max - self.x_min) / 2 * self.scale),
+                    int((self.y_max - self.y_min) / 2 * self.scale))
+
+        cv2.circle(img, center, radius, (255, 255, 255), -1)
+        # Convert the image to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Threshold the image to create a binary image
+        _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+        # Find contours in the binary image
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Calculate the size of each blob
+        blob_sizes = [cv2.contourArea(contour) for contour in contours]
+
+        return min(blob_sizes)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # loop over all agents and tell them to run their randomize_state method
@@ -146,7 +171,7 @@ class SwarmEnv(gym.Env):
             agent.randomize_state((buffer*self.x_min, buffer*self.x_max),
                                   (buffer*self.y_min, buffer*self.y_max),
                                   (-np.pi, np.pi),
-                                  (1., 1.))
+                                  (MAX_INTENSITY, MAX_INTENSITY))
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # This function calculates the temperature field including all sources
@@ -162,12 +187,10 @@ class SwarmEnv(gym.Env):
 
             intensity = agent.get_intensity()
 
-            distance_squared = ((self.X - xs)**2 + (self.Y - ys)**2)
-
-            temp_map += intensity / (distance_squared + 1)  # Avoid division by zero
+            temp_map += intensity / ((self.X - xs)**2 + (self.Y - ys)**2 + 1.)
 
         return temp_map
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def _get_obs(self):
 
         # get the temperature map including all agents
@@ -175,25 +198,30 @@ class SwarmEnv(gym.Env):
 
         # create an empty observation array
         observation = np.zeros(self.observation_space.shape, dtype=float)
-      
+
         futures_list = []
-      
+
         with ProcessPoolExecutor() as executor:
             for i, agent in enumerate(self.agent_list):
-                future = executor.submit(process_agent, 
+
+                # Subtract the agent's contribution from the temperature map
+                agent_contribution = agent.get_intensity() / (((self.X - agent.x)**2 + (self.Y - agent.y)**2) + 1.)
+                temp_map_ = temp_map - agent_contribution
+
+                future = executor.submit(process_agent,
                                          i,
-                                         agent.get_position(), 
+                                         agent.get_position(),
                                          agent.get_heading(),
-                                         temp_map, 
-                                         self.X.flatten().copy(), 
-                                         self.Y.flatten().copy())
+                                         temp_map_,
+                                         self.X[0,:],
+                                         self.Y[:,0])
+
                 futures_list.append(future)
-                
+
         for future in as_completed(futures_list):
             result = future.result()
             if result is not None:
                 i, angle, intensity = result
-                
                 # store the observation for this agent
                 observation[i, 0] = angle
                 observation[i, 1] = intensity
@@ -273,30 +301,30 @@ class SwarmEnv(gym.Env):
                 if cv2.pointPolygonTest(contour, point, False) >= 0:
                     reward_vector[i] = blob_sizes[j] - self.min_blob_size
                     break
-            
+
         return reward_vector
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # check if the end of the episode has been reached
     def _check_done(self):
         return self.step_counter >= self.max_steps
-    
+
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # if an agent is near the edge of the field truncate the episode
     # this is to prevent agents from going out of bounds
     def _check_trunc(self):
-        
-        buffer = 0.01*self.field_size
-        
+
+        buffer = 0.05*self.field_size
+
         for agent in self.agent_list:
                 pos = agent.get_position()
                 if (pos[0] < self.x_min+buffer or pos[0] > self.x_max-buffer or
                     pos[1] < self.y_min+buffer or pos[1] > self.y_max-buffer):
                     return True
         return False
-   
+
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    
+
     def _convertAction(self, a):
         """
         Convert an action a in [0, 1] to an actual action
@@ -305,19 +333,19 @@ class SwarmEnv(gym.Env):
         """
         a = (a * (self.action_space.high[0] - self.action_space.low[0])
             + self.action_space.low[0])
-        return np.array([a, ])              
+        return np.array([a, ])
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # This function is called at each time step
     # the action is a 1D vector for each agent so the shape is (n_agents, 1)
     # the value represents the turning rate of the agent
-    
+
     def step(self, action):
         s_total = time.time()
         # Update the heading of each agent based on the action taken and then update the position
         for i, agent in enumerate(self.agent_list):
-            # convert [0,1] action to [-MAX_TURN_RATE, MAX_TURN_RATE]                
-            w = self._convertAction(action[i, 0])    
+            # convert [0,1] action to [-MAX_TURN_RATE, MAX_TURN_RATE]
+            w = self._convertAction(action[i, 0])
             # apply action to agent
             agent.update_heading(w)
             agent.set_intensity(MAX_INTENSITY)
@@ -336,7 +364,7 @@ class SwarmEnv(gym.Env):
 
         # Calculate the reward
         self.reward = self._calculate_reward()
-   
+
         done = self._check_done()
         trunc = self._check_trunc()
         info = {}
@@ -389,9 +417,9 @@ class SwarmEnv(gym.Env):
         for i, row in enumerate(obs):
             pos = self.agent_list[i].get_position()
             heading = self.agent_list[i].get_heading()
-            grad_x = np.cos(row[0] + heading)
-            grad_y = np.sin(row[0] + heading)
-            
+            grad_x = np.cos(row[0]+heading)
+            grad_y = np.sin(row[0]+heading)
+
             # Convert agent position to image coordinates
             x = int((pos[0] + self.field_size / 2) * self.scale)
             y = int((pos[1] + self.field_size / 2) * self.scale)
@@ -419,6 +447,24 @@ class SwarmEnv(gym.Env):
 
             # Draw the arrow representing the agent's heading
             cv2.arrowedLine(img, (x, y), (end_x, end_y), (0, 255, 255), 1, tipLength=0.3)
+
+        # Write the agent's index beside its circle
+        for i, agent in enumerate(self.agent_list):
+            if not self._agent_visible(agent):
+                continue
+
+            pos = agent.get_position()
+            # Convert agent position to image coordinates
+            x = int((pos[0] + self.field_size / 2) * self.scale)
+            y = int((pos[1] + self.field_size / 2) * self.scale)
+
+            # Write the agent's index near its position
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            color = (255, 255, 255)  # White color
+            thickness = 1
+            text = str(i)
+            cv2.putText(img, text, (x+5, y+5), font, font_scale, color, thickness)
 
         # Write the step counter in the top right corner of the image
         font = cv2.FONT_HERSHEY_SIMPLEX
