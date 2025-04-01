@@ -2,8 +2,9 @@ import os
 
 import numpy as np
 import matplotlib.pyplot as plt
-
+from pprint import pprint
 from SwarmEnv import *
+from LearningAlgo import *
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def plot_temp_field(env):
@@ -20,14 +21,18 @@ def plot_temp_field(env):
     plt.colorbar(label="Temperature")
 
 
-    # # Plot vector field (gradient)
-    # grad_y, grad_x = env.get_gradients()
-    # plt.quiver(env.get_x_mesh(),
-    #            env.get_y_mesh(),
-    #            grad_x,
-    #            grad_y,
-    #            color='blue',
-    #            scale=50)
+    # Plot vector field (gradient)
+    grad_y, grad_x = env.get_gradients()
+    x_mesh = env.get_x_mesh()
+    y_mesh = env.get_y_mesh()
+
+    # Display only every 10th arrow
+    plt.quiver(x_mesh[::10, ::10],
+               y_mesh[::10, ::10],
+               grad_x[::10, ::10],
+               grad_y[::10, ::10],
+               color='blue',
+               scale=50)
 
     plt.xlabel("X")
     plt.ylabel("Y")
@@ -90,32 +95,26 @@ def policy_nadda(   state : np.ndarray,
     action = np.zeros(action_space.shape, dtype=float)
 
     # Set the values of the first column of action to a random value between -0.1 and 0.1
-    action[:, 0] = np.random.uniform(-MAX_TURN_RATE,
-                                     MAX_TURN_RATE,
-                                     size=action.shape[0])
-
-    # Set the values of the second column of action to 1
-    action[:, 1] = MAX_INTENSITY
+    action[:,0] = np.random.uniform(0.,
+                                    1.,
+                                    size=action.shape[0])
 
     return action
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-def main():
-
-    env = SwarmEnv( n_agents=5,
-                    agent_radius=0.4,
-                    max_steps=100,
-                    field_size = 20.)
-
+def run_example(env):
+    
     done = False
+    trunc = False
     state, _ = env.reset()
+    
     np.set_printoptions(precision=5, suppress=True)
-
-    while not done:
+    
+    while not (done or trunc):
 
         action = policy_nadda(state, env.action_space)
-        state, reward, done, info = env.step(action)
+        state, reward, done, trunc, info = env.step(action)
 
         print(f"Action: {action}")
         print(f"Observation: {state}")
@@ -128,10 +127,45 @@ def main():
         plot_temp_field(env)
         env.render()
 
+    if trunc:
+        print("Episode truncated")
+    elif done:
+        print("Episode done")
+        
 
     # plot_temp_field(env)
 
     return
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+def main():
+
+    #run_training = False
+    run_training = True
+    
+    env = SwarmEnv( n_agents=5,
+                    agent_radius=0.4,
+                    max_steps=250,
+                    field_size=25.)
+
+    featurizer = RbfSwarmFeaturizer(env, 100)
+
+    if run_training:
+        # Train the model
+        Theta, w, eval_returns =    ActorCriticCont(env,
+                                                    featurizer,
+                                                    max_episodes=500,
+                                                    evaluate_every=10)
+        # Save the model
+        np.savez("output/model.npz", Theta=Theta, w=w)
+    else:
+        run_example(env)
+   
+   
+
+
+  
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
