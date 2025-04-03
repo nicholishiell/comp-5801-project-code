@@ -57,12 +57,21 @@ def policy_fixed(   state : np.ndarray,
         intensity = row[1]
 
         turn = None
-        if bearing < 0.:
-            turn = 0.25
-        elif bearing > 0.:
-            turn = 0.75
+        
+        if intensity < 20:
+            if bearing < 0.:
+                turn = 0.25
+            elif bearing > 0.:
+                turn = 0.75
+            else:
+                turn = 0.5
         else:
-            turn = 0.5
+            if bearing > 0.:
+                turn = 0.25
+            elif bearing < 0.:
+                turn = 0.75
+            else:
+                turn = 0.5
 
         action[i, 0] = turn
 
@@ -124,13 +133,13 @@ def run_example(env):
 
 def main():
 
-    run_training = False
-    #run_training = True
+    #run_training = False
+    run_training = True
 
     env = SwarmEnv( n_agents=5,
                     agent_radius=0.4,
-                    max_steps=1000,
-                    field_size=35.)
+                    max_steps=500,
+                    field_size=50.)
 
     featurizer = RbfSwarmFeaturizer(env, 100)
 

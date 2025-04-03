@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-MAX_TURN_RATE = 0.1 # Maximum turn rate in radians per time step
+MAX_TURN_RATE = np.pi/10 # Maximum turn rate in radians per time step
 TIME_STEP = 0.1 # Time step in seconds
 MAX_INTENSITY = 100.0 # Maximum intensity of the signal emitted by an agent
 
@@ -59,7 +59,7 @@ def process_agent(  i,
 
     # print(f"Agent {i} = intensity: {c} gradient: {gx_at_pos, gy_at_pos} theta: {angle_global*180./np.pi} ")
 
-    return i, angle_relative, min(c, MAX_INTENSITY)
+    return i, angle_relative, c
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -72,7 +72,7 @@ class SwarmEnv(gym.Env):
     # this function initializes the environment
     def __init__(self,
                  render_mode=None,
-                 n_agents=10,
+                 n_agents=5,
                  agent_radius=0.4,
                  max_steps=1000,
                  field_size = 10.,
@@ -80,6 +80,9 @@ class SwarmEnv(gym.Env):
 
         # the value of the latest reward
         self.reward = 0
+
+        # use to display observation data to render
+        self.observation = None
 
         # number of agents
         self.agent_list = [Agent(0., 0., 0., 0.) for _ in range(n_agents)]
@@ -166,7 +169,7 @@ class SwarmEnv(gym.Env):
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # loop over all agents and tell them to run their randomize_state method
     def _randomize_agents(self,
-                          buffer=0.5):
+                          buffer=0.6):
         for agent in self.agent_list:
             agent.randomize_state((buffer*self.x_min, buffer*self.x_max),
                                   (buffer*self.y_min, buffer*self.y_max),
@@ -247,7 +250,8 @@ class SwarmEnv(gym.Env):
         self.action = np.zeros(self.action_space.shape, dtype=float)
 
         self.reward = 0
-
+        self.observation = np.zeros(self.observation_space.shape, dtype=float)
+        
         self.action = None
         observation = self._get_obs()
         info = {}
@@ -360,7 +364,7 @@ class SwarmEnv(gym.Env):
         self.step_counter += 1
 
         # Get the observations
-        observation = self._get_obs()
+        self.observation = self._get_obs()
 
         # Calculate the reward
         self.reward = self._calculate_reward()
@@ -371,7 +375,7 @@ class SwarmEnv(gym.Env):
 
         self.action = action
 
-        return observation, self.reward, done, trunc, info
+        return self.observation, self.reward, done, trunc, info
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # check if an agent is within the visible area
@@ -413,8 +417,10 @@ class SwarmEnv(gym.Env):
                 cv2.ellipse(img, center, (radius, radius), 0, start_angle, end_angle, color, thickness)
 
         # show the gradient vector observed by the agent
-        obs = self._get_obs()
+        obs = self.observation
         for i, row in enumerate(obs):
+            bearing = row[0]
+            intensity = row[1]            
             pos = self.agent_list[i].get_position()
             heading = self.agent_list[i].get_heading()
             grad_x = np.cos(row[0]+heading)
@@ -429,6 +435,15 @@ class SwarmEnv(gym.Env):
             end_y = int(y + arrow_length * grad_y)
             # Draw the arrow representing the gradient vector
             cv2.arrowedLine(img, (x, y), (end_x, end_y), (255, 255, 0), 1, tipLength=0.3)
+            
+            # Write the intensity value below the agent
+            intensity_text = f"{intensity:.2f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            text_size = cv2.getTextSize(intensity_text, font, font_scale, thickness)[0]
+            text_x = x - text_size[0] // 2  # Center the text horizontally
+            text_y = y + int(self.agent_radius * self.scale) + text_size[1] + 10  # Position below the agent
+            cv2.putText(img, intensity_text, (text_x, text_y), font, font_scale, color, thickness)
 
 
         # show the heading of the agent

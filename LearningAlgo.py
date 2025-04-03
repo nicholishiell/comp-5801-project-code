@@ -155,7 +155,7 @@ def evaluation_run( env,
                                     theta,
                                     env.action_space)
 
-        
+        print(action)
         state, reward, done, trunc, info = env.step(action)
 
         largest_blob_list.append(np.max(reward))
@@ -169,13 +169,17 @@ def evaluation_run( env,
 
 def ActorCriticCont(env,
                     featurizer,
-                    actor_step_size=0.005,
-                    critic_step_size=0.005,
+                    actor_step_size=0.05,
+                    critic_step_size=0.05,
                     max_episodes=1500,
                     evaluate_every=50):
 
     # policy parameters for a linear function approximation
-    theta = np.ones([featurizer.n_features, 2])
+    # each column is a parameter vector for the beta distribution
+    # theta[:,0] is the alpha parameter
+    # theta[:,1] is the beta parameter
+    theta = np.random.uniform(0., 1., size=(featurizer.n_features, 2))
+    #theta = np.ones([featurizer.n_features, 2])
 
     # state value function weights for a linear function approximation
     w = np.zeros(featurizer.n_features)
@@ -183,11 +187,11 @@ def ActorCriticCont(env,
     # initialize the average return
     r_avg = 0.
 
-    lambda_w = 0.001
-    lambda_theta = 0.001
+    lambda_w = 0.01
+    lambda_theta = 0.01
     alpha_w = actor_step_size
     alpha_theta = critic_step_size
-    alpha_r = 0.005
+    alpha_r = 0.05
 
     eligibility_w = np.zeros_like(w)
     eligibility_theta = np.zeros_like(theta)
@@ -224,6 +228,8 @@ def ActorCriticCont(env,
             # loop over all agents and apply the actor-critic update
             for agent_idx in range(env.n_agents):
 
+                if agent_idx != 0:
+                    continue
                 # linear value function approximation of s
                 v_of_s = w.transpose() @ x_s[agent_idx, :]
 
