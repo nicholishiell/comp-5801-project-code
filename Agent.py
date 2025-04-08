@@ -27,7 +27,6 @@ class Agent:
         self.vision_range = vision_range
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
     def randomize_state(self,
                         x_range: tuple,
                         y_range: tuple,

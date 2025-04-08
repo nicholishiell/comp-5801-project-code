@@ -119,7 +119,7 @@ class SwarmEnv(gym.Env):
         # the first value is angle relative to the agents heading of the gradient
         # the second value is the temperature at the agent's location
         self.observation_space = spaces.Box(low=np.tile([-np.pi,0.], (n_agents, 1)),
-                                            high=np.tile([np.pi,float(MAX_INTENSITY)], (n_agents, 1)),
+                                            high=np.tile([np.pi,float(2.*MAX_INTENSITY)], (n_agents, 1)),
                                             shape=(n_agents,2),
                                             dtype=np.float32)
 
@@ -169,7 +169,7 @@ class SwarmEnv(gym.Env):
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # loop over all agents and tell them to run their randomize_state method
     def _randomize_agents(self,
-                          buffer=0.6):
+                          buffer=0.5):
         for agent in self.agent_list:
             agent.randomize_state((buffer*self.x_min, buffer*self.x_max),
                                   (buffer*self.y_min, buffer*self.y_max),
@@ -249,7 +249,7 @@ class SwarmEnv(gym.Env):
 
         self.action = np.zeros(self.action_space.shape, dtype=float)
 
-        self.reward = 0
+        self.reward = np.zeros(self.n_agents, dtype=float)
         self.observation = np.zeros(self.observation_space.shape, dtype=float)
         
         self.action = None
@@ -260,53 +260,70 @@ class SwarmEnv(gym.Env):
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # calculate the reward by finding the largest blob in the image
+    
     def _calculate_reward(self):
-
-        # each agent receives a reward based on the size of the blob it is in
+        TARGET_INTENSITY = 30.
+        # Reward is the intensity value measured by each agent
         reward_vector = np.zeros(len(self.agent_list))
 
-        # Create a blank image
-        img = np.zeros((self.window_size,
-                        self.window_size, 3), dtype=np.uint8)
-
-        for i, agent in enumerate(self.agent_list):
-            # skip agents that are not visible
-            if not self._agent_visible(agent):
-                continue
-
-            # get the position of the agent
-            pos = agent.get_position()
-
-            # Convert agent position to image coordinates
-            center = (int((pos[0] + self.field_size / 2) * self.scale),
-                        int((pos[1] + self.field_size / 2) * self.scale))
-
-            cv2.circle(img, center, int(agent.vision_range * self.scale), (255, 0, 0), -1)
-
-        # Convert the image to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Threshold the image to create a binary image
-        _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-
-        # Find contours in the binary image
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Calculate the size of each blob
-        blob_sizes = [cv2.contourArea(contour) for contour in contours]
-
-        # Find which contour each agent is inside of
         for i, agent in enumerate(self.agent_list):
             pos = agent.get_position()
-
-            point = (int((pos[0] + self.field_size / 2) * self.scale),
-                 int((pos[1] + self.field_size / 2) * self.scale))
-            for j, contour in enumerate(contours):
-                if cv2.pointPolygonTest(contour, point, False) >= 0:
-                    reward_vector[i] = blob_sizes[j] - self.min_blob_size
-                    break
+            intensity = _interpolate(pos[1], pos[0], self.get_temp_map(), self.X[0, :], self.Y[:, 0])
+            
+            # intensity -= MAX_INTENSITY
+            # if intensity < TARGET_INTENSITY:
+            #     reward_vector[i] = intensity - TARGET_INTENSITY
+            # else:
+            #     reward_vector[i] = TARGET_INTENSITY - intensity
+            reward_vector[i] = intensity - MAX_INTENSITY
 
         return reward_vector
+
+        # each agent receives a reward based on the size of the blob it is in
+        # reward_vector = np.zeros(len(self.agent_list))
+
+        # # Create a blank image
+        # img = np.zeros((self.window_size,
+        #                 self.window_size, 3), dtype=np.uint8)
+
+        # for i, agent in enumerate(self.agent_list):
+        #     # skip agents that are not visible
+        #     if not self._agent_visible(agent):
+        #         continue
+
+        #     # get the position of the agent
+        #     pos = agent.get_position()
+
+        #     # Convert agent position to image coordinates
+        #     center = (int((pos[0] + self.field_size / 2) * self.scale),
+        #                 int((pos[1] + self.field_size / 2) * self.scale))
+
+        #     cv2.circle(img, center, int(agent.vision_range * self.scale), (255, 0, 0), -1)
+
+        # # Convert the image to grayscale
+        # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # # Threshold the image to create a binary image
+        # _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+
+        # # Find contours in the binary image
+        # contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # # Calculate the size of each blob
+        # blob_sizes = [cv2.contourArea(contour) for contour in contours]
+
+        # # Find which contour each agent is inside of
+        # for i, agent in enumerate(self.agent_list):
+        #     pos = agent.get_position()
+
+        #     point = (int((pos[0] + self.field_size / 2) * self.scale),
+        #          int((pos[1] + self.field_size / 2) * self.scale))
+        #     for j, contour in enumerate(contours):
+        #         if cv2.pointPolygonTest(contour, point, False) >= 0:
+        #             reward_vector[i] = blob_sizes[j] - self.min_blob_size
+        #             break
+
+        # return reward_vector/self.min_blob_size
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # check if the end of the episode has been reached
@@ -345,6 +362,8 @@ class SwarmEnv(gym.Env):
     # the value represents the turning rate of the agent
 
     def step(self, action):
+        
+        
         s_total = time.time()
         # Update the heading of each agent based on the action taken and then update the position
         for i, agent in enumerate(self.agent_list):
@@ -480,6 +499,23 @@ class SwarmEnv(gym.Env):
             thickness = 1
             text = str(i)
             cv2.putText(img, text, (x+5, y+5), font, font_scale, color, thickness)
+            # Write the latest action of the agents near their position
+            for i, agent in enumerate(self.agent_list):
+                if not self._agent_visible(agent):
+                    continue
+
+                pos = agent.get_position()
+                # Convert agent position to image coordinates
+                x = int((pos[0] + self.field_size / 2) * self.scale)
+                y = int((pos[1] + self.field_size / 2) * self.scale)
+
+                # Write the agent's latest action near its position
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                color = (0, 255, 255)  # Yellow color
+                thickness = 1
+                action_text = f"{self.action[i, 0]:.2f}" if self.action is not None else "N/A"
+                cv2.putText(img, action_text, (x+5, y+20), font, font_scale, color, thickness)
 
         # Write the step counter in the top right corner of the image
         font = cv2.FONT_HERSHEY_SIMPLEX

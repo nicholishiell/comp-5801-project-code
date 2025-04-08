@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from pprint import pprint
 from SwarmEnv import *
 from LearningAlgo import *
+import sys
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def plot_temp_field(env):
@@ -41,40 +42,42 @@ def plot_temp_field(env):
 
     frame_id = f"{env.step_counter:03d}"
     plt.savefig(f"output/temp-map-{frame_id}.png")
-
+    plt.close()
     return
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MAX_TURN_RATE = np.pi/10
+
+def calculate_action( bearing, intensity) -> float:
+    
+    turn = 0.5
+    if intensity < 50:
+        if bearing > 0:
+            turn = 1.
+        elif bearing < 0:
+            turn = 0.
+    else:
+        if bearing > 0:
+            turn = 0.
+        elif bearing < 0:
+            turn = 1.
+
+
+    return turn
 
 def policy_fixed(   state : np.ndarray,
                     action_space )->np.ndarray:
 
     action = np.zeros(action_space.shape, dtype=float)
 
+
     for i, row in enumerate(state):
 
         bearing = row[0]
         intensity = row[1]
-
-        turn = None
+               
+        action[i, :] = calculate_action(bearing, intensity)
         
-        if intensity < 20:
-            if bearing < 0.:
-                turn = 0.25
-            elif bearing > 0.:
-                turn = 0.75
-            else:
-                turn = 0.5
-        else:
-            if bearing > 0.:
-                turn = 0.25
-            elif bearing < 0.:
-                turn = 0.75
-            else:
-                turn = 0.5
-
-        action[i, 0] = turn
-
     return action
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -93,19 +96,94 @@ def policy_nadda(   state : np.ndarray,
     return action
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def plot_policy_fixed(policy_function):
+            
 
-def run_example(env):
+    ang_points = np.arange(-np.pi, np.pi, 0.1)
+    intensity_points = np.arange(0., 100., 0.5)
+
+    # plot the policy
+    policy_plot_data = []
+    for ang in ang_points:
+        for intensity in intensity_points:
+            a = policy_function(ang, intensity)
+            policy_plot_data.append((ang, intensity, a))
+
+    # Create a heatmap of the policy data
+    ang_points_grid, ang_vel_points_grid = np.meshgrid(ang_points, intensity_points, indexing='ij')
+    action_values = np.array([action for _, _, action in policy_plot_data]).reshape(len(ang_points), len(intensity_points))
+
+    levels = np.linspace(0.,1., 100)
+    plt.figure(figsize=(10, 8))
+    plt.contourf(ang_points_grid, ang_vel_points_grid, action_values,levels=levels, cmap='viridis')
+    plt.colorbar(label='Action Value')
+    plt.xlabel('Angle (rad)')
+    plt.ylabel('Intensity')
+    plt.title('Policy Heatmap')
+    plt.savefig('output/policy_fixed.png')
+    plt.close()
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+def load_model(model_path):
+    # Load the model parameters from the file
+    data = np.load(model_path)
+    Theta = data['Theta']
+    w = data['w']
+
+    return Theta, w
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+def run_learned_policy_example(env, featurizer):
+    
+    # Load the model
+    model_path = "output/model.npz"
+    theta, _ = load_model(model_path)
+ 
+    print("Theta:")
+    pprint(theta)
+ 
+    done = False
+    trunc = False
+    state, _ = env.reset()
+    
+    # calculate the state feature vector
+    x_s = featurizer.featurize_swarm(state)
+    
+    _,_,action_values = plot_policy(theta=theta,featurizer=featurizer,filename="loaded_policy.png")
+    
+    # print("Action Values:")
+    # pprint(action_values)
+    
+    # while not (done or trunc):
+    #     action = get_swarm_actions( x_s, 
+    #                                 theta,
+    #                                 env.action_space)
+
+    #     state, _, done, trunc, _ = env.step(action)
+
+    #     # Plot the temperature field and gradient vectors
+    #     env.render()
+
+    #     # # update the state
+    #     x_s = featurizer.featurize_swarm(state)
+    
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+def run_fixed_policy_example(env):
 
     done = False
     trunc = False
     state, _ = env.reset()
 
-    np.set_printoptions(precision=5, suppress=True)
+    np.set_printoptions(precision=3, suppress=True)
 
+    plot_policy(calculate_action)
+    input("Press Enter to continue...")
     while not (done or trunc):
 
         action = policy_fixed(state, env.action_space)
-        # action = policy_nadda(state, env.action_space)
         state, reward, done, trunc, info = env.step(action)
 
         print(f"Action: {action}")
@@ -114,10 +192,11 @@ def run_example(env):
         print(f"Done: {done}")
         print(f"Info: {info}")
         print(f'Step: {env.step_counter} / {env.max_steps}')
-
+        
         # Plot the temperature field and gradient vectors
-        plot_temp_field(env)
+        # plot_temp_field(env)
         env.render()
+
 
     if trunc:
         print("Episode truncated")
@@ -131,28 +210,33 @@ def run_example(env):
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-def main():
-
-    #run_training = False
-    run_training = True
+def main(run_option):
 
     env = SwarmEnv( n_agents=5,
                     agent_radius=0.4,
                     max_steps=500,
-                    field_size=50.)
+                    field_size=25.)
 
-    featurizer = RbfSwarmFeaturizer(env, 100)
+    featurizer = RbfSwarmFeaturizer(env, 1000)
 
-    if run_training:
+    if run_option == "train":
         # Train the model
-        Theta, w, eval_returns =    ActorCriticCont(env,
-                                                    featurizer,
-                                                    max_episodes=500,
-                                                    evaluate_every=10)
+        Theta, w, eval_returns =    ActorCriticEpisodic(env,
+                                                        featurizer,
+                                                        max_episodes=100,
+                                                        evaluate_every=10)
         # Save the model
-        np.savez("output/model.npz", Theta=Theta, w=w)
-    else:
-        run_example(env)
+        np.savez("output/model.npz", 
+                 Theta=Theta, 
+                 ft_centers=featurizer._centers, 
+                 ft_means=featurizer._mean, 
+                 ft_std =featurizer._std) 
+        
+    elif run_option == "fixed":
+        run_fixed_policy_example(env)
+    elif run_option == "learned":
+        run_learned_policy_example(env, featurizer)
+        
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -162,4 +246,10 @@ if __name__ == "__main__":
     if not os.path.exists('output'):
         os.makedirs('output')
 
-    main()
+    if len(sys.argv) != 2:
+        print("Usage: python main.py <arg>")
+        sys.exit(1)
+
+    run_option = sys.argv[1]
+              
+    main(run_option)
